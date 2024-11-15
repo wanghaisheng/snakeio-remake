@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Position, Segment, Player } from "./types";
 import io from "socket.io-client";
 
-const socket = io("http://localhost:3001"); // Certifique-se de que a porta corresponde à do servidor
+const socket = io("http://localhost:3001");
 
 const Game: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -18,6 +18,9 @@ const Game: React.FC = () => {
   );
   const [foods, setFoods] = useState<any[]>([]);
 
+  const MAP_SIZE = 100; // Tamanho da grade do mapa em pixels
+  const INITIAL_LENGTH = 20; // Tamanho inicial da cobra
+
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
@@ -26,10 +29,6 @@ const Game: React.FC = () => {
     if (!canvas || !ctx || !cursor) return;
 
     let animationFrameId: number;
-
-    // Variáveis do jogo
-    let mouseX = 0;
-    let mouseY = 0;
 
     const keys: { [key: string]: boolean } = {
       w: false,
@@ -58,15 +57,22 @@ const Game: React.FC = () => {
         this.segments = [position];
         this.velocity = { x: 0, y: 0 };
         this.speed = 4;
-        this.length = 20;
+        this.length = INITIAL_LENGTH;
         this.angle = 0;
         this.isDead = false;
         this.baseColor = color;
         this.tailColor = "hsl(160, 100%, 30%)";
       }
 
+      reset() {
+        this.segments = [{ x: canvas.width / 2, y: canvas.height / 2 }];
+        this.velocity = { x: 0, y: 0 };
+        this.angle = 0;
+        this.isDead = false;
+        this.length = INITIAL_LENGTH;
+      }
+
       update() {
-        // Movimento do jogador (WASD)
         let dirX = 0;
         let dirY = 0;
 
@@ -85,23 +91,60 @@ const Game: React.FC = () => {
         this.velocity.x += (targetVelX - this.velocity.x) * 0.3;
         this.velocity.y += (targetVelY - this.velocity.y) * 0.3;
 
-        const newHead = {
-          x: this.segments[0].x + this.velocity.x,
-          y: this.segments[0].y + this.velocity.y,
-        };
+        let newHeadX = this.segments[0].x + this.velocity.x;
+        let newHeadY = this.segments[0].y + this.velocity.y;
+
+        // Ajusta para o teletransporte nas bordas
+        if (newHeadX < 0) newHeadX = canvas.width;
+        else if (newHeadX > canvas.width) newHeadX = 0;
+
+        if (newHeadY < 0) newHeadY = canvas.height;
+        else if (newHeadY > canvas.height) newHeadY = 0;
+
+        const newHead = { x: newHeadX, y: newHeadY };
         this.segments.unshift(newHead);
 
+        // Ajuste para a continuidade dos segmentos ao teletransportar
+        for (let i = 1; i < this.segments.length; i++) {
+          const dx = this.segments[i - 1].x - this.segments[i].x;
+          const dy = this.segments[i - 1].y - this.segments[i].y;
+
+          if (Math.abs(dx) > canvas.width / 2) {
+            this.segments[i].x += dx > 0 ? canvas.width : -canvas.width;
+          }
+
+          if (Math.abs(dy) > canvas.height / 2) {
+            this.segments[i].y += dy > 0 ? canvas.height : -canvas.height;
+          }
+        }
+
+        // Remove o excesso de segmentos
         while (this.segments.length > this.length) {
           this.segments.pop();
         }
 
-        // Envia o movimento para o servidor
         socket.emit("playerMovement", {
           position: this.segments[0],
           angle: this.angle,
           segments: this.segments,
           length: this.length,
         });
+
+        // Checa se a cobra colidiu com algum alimento
+        for (let i = 0; i < foods.length; i++) {
+          const food = foods[i];
+          const dist = Math.hypot(
+            food.position.x - newHead.x,
+            food.position.y - newHead.y
+          );
+          if (dist < MAP_SIZE / 2) {
+            this.length += 5; // Aumenta o comprimento da cobra
+            setScore((prev) => prev + 1);
+            setFoods((prevFoods) =>
+              prevFoods.filter((_, index) => index !== i)
+            );
+          }
+        }
       }
 
       draw() {
@@ -162,32 +205,23 @@ const Game: React.FC = () => {
       }
     }
 
-    // Instância do Snake do jogador
     let playerSnake: Snake | null = null;
-
-    // Dicionário de cobras dos outros jogadores
     const snakes: { [id: string]: Snake } = {};
 
-    // Eventos do Socket.IO
-
-    // Adicione um listener para o evento 'connect' para garantir que o socket está conectado
     socket.on("connect", () => {
       console.log("Conectado ao servidor com ID:", socket.id);
     });
 
     socket.on("currentPlayers", (players: { [id: string]: Player }) => {
-      console.log("currentPlayers:", players);
       Object.keys(players).forEach((id) => {
         const playerData = players[id];
         if (id === socket.id) {
-          // Jogador local
           playerSnake = new Snake(playerData.position, playerData.color);
           playerSnake.segments =
             playerData.segments.length > 0
               ? playerData.segments
               : [playerData.position];
         } else {
-          // Outros jogadores
           const otherSnake = new Snake(playerData.position, playerData.color);
           otherSnake.segments =
             playerData.segments.length > 0
@@ -200,7 +234,6 @@ const Game: React.FC = () => {
     });
 
     socket.on("newPlayer", (playerData: Player) => {
-      console.log("Novo jogador conectado:", playerData.id);
       if (playerData.id !== socket.id) {
         const newSnake = new Snake(playerData.position, playerData.color);
         newSnake.segments =
@@ -221,26 +254,31 @@ const Game: React.FC = () => {
     });
 
     socket.on("disconnect", (id: string) => {
-      console.log("Jogador desconectado:", id);
       delete snakes[id];
     });
 
     socket.on("currentFoods", (serverFoods: any[]) => {
-      console.log("Foods recebidos do servidor");
       setFoods(serverFoods);
     });
 
-    socket.on("removeFood", (foodId: number) => {
-      setFoods((prevFoods) => prevFoods.filter((food) => food.id !== foodId));
-    });
-
-    // Funções auxiliares
+    const spawnFood = () => {
+      const foodPosition = {
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+      };
+      setFoods((prevFoods) => [
+        ...prevFoods,
+        {
+          position: foodPosition,
+          hue: Math.floor(Math.random() * 360),
+          size: MAP_SIZE / 2,
+        },
+      ]);
+    };
 
     const resizeCanvas = () => {
-      canvas.width = window.innerWidth * 2;
-      canvas.height = window.innerHeight * 2;
-      canvas.style.width = "100vw";
-      canvas.style.height = "100vh";
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
     };
 
     resizeCanvas();
@@ -251,12 +289,6 @@ const Game: React.FC = () => {
       if (keys.hasOwnProperty(key)) {
         keys[key] = true;
       }
-
-      if (e.code === "Space" && gameOver) {
-        setGameOver(false);
-        setScore(0);
-        // Reiniciar o jogo
-      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -266,127 +298,83 @@ const Game: React.FC = () => {
       }
     };
 
-    const handleMouseMove = (e: MouseEvent) => {
-      cursor.style.left = e.clientX + "px";
-      cursor.style.top = e.clientY + "px";
-
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-
-      mouseX = ((e.clientX - rect.left) * scaleX) / 2;
-      mouseY = ((e.clientY - rect.top) * scaleY) / 2;
-    };
-
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("keyup", handleKeyUp);
-    document.addEventListener("mousemove", handleMouseMove);
 
-    const showGameOver = () => {
-      if (!ctx) return;
-
+    const drawGrid = () => {
       ctx.save();
-      ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      ctx.fillStyle = "white";
-      ctx.font = "48px Arial";
-      ctx.textAlign = "center";
-      ctx.fillText("Game Over!", canvas.width / 2, canvas.height / 2 - 50);
-
-      ctx.font = "24px Arial";
-      ctx.fillText(
-        `Final Score: ${score}`,
-        canvas.width / 2,
-        canvas.height / 2 + 10
-      );
-      ctx.fillText(
-        "Press Space to Restart",
-        canvas.width / 2,
-        canvas.height / 2 + 50
-      );
-      ctx.restore();
-    };
-
-    const gameLoop = () => {
-      if (!ctx || !playerSnake) {
-        // console.log('Aguardando inicialização do playerSnake...');
-        requestAnimationFrame(gameLoop);
-        return;
-      }
-
-      const targetCameraX = playerSnake.segments[0].x - window.innerWidth;
-      const targetCameraY = playerSnake.segments[0].y - window.innerHeight;
-      camera.x += (targetCameraX - camera.x) * 0.1;
-      camera.y += (targetCameraY - camera.y) * 0.1;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      ctx.save();
-      ctx.translate(-camera.x, -camera.y);
       ctx.strokeStyle = "#333";
       ctx.lineWidth = 1;
-      const gridSize = 100;
-
-      for (let x = 0; x < canvas.width; x += gridSize) {
+      for (let x = 0; x < canvas.width; x += MAP_SIZE) {
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, canvas.height);
         ctx.stroke();
       }
-      for (let y = 0; y < canvas.height; y += gridSize) {
+      for (let y = 0; y < canvas.height; y += MAP_SIZE) {
         ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(canvas.width, y);
         ctx.stroke();
       }
       ctx.restore();
+    };
 
-      if (!gameOver) {
-        playerSnake.update();
-
-        // Desenha os alimentos
-        foods.forEach((food) => {
-          ctx.save();
-          ctx.translate(-camera.x, -camera.y);
-
-          ctx.shadowColor = `hsl(${food.hue}, 100%, 50%)`;
-          ctx.shadowBlur = 15 * 1;
-          ctx.beginPath();
-          ctx.arc(food.position.x, food.position.y, food.size, 0, Math.PI * 2);
-          ctx.fillStyle = `hsl(${food.hue}, 100%, 50%)`;
-          ctx.fill();
-
-          ctx.restore();
-        });
-
-        // Desenha os outros jogadores
-        Object.keys(snakes).forEach((id) => {
-          if (snakes[id]) {
-            snakes[id].draw();
-          }
-        });
-
-        // Desenha o jogador local
-        playerSnake.draw();
+    const gameLoop = () => {
+      if (!ctx || !playerSnake) {
+        requestAnimationFrame(gameLoop);
+        return;
       }
 
-      if (gameOver) {
-        showGameOver();
+      if (gameOver) return;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.translate(-camera.x, -camera.y);
+
+      drawGrid();
+
+      ctx.restore();
+
+      playerSnake.update();
+      if (playerSnake.isDead) {
+        setGameOver(true);
+        return;
       }
+
+      foods.forEach((food) => {
+        ctx.save();
+        ctx.translate(-camera.x, -camera.y);
+        ctx.shadowColor = `hsl(${food.hue}, 100%, 50%)`;
+        ctx.shadowBlur = 15;
+        ctx.beginPath();
+        ctx.arc(food.position.x, food.position.y, food.size, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${food.hue}, 100%, 50%)`;
+        ctx.fill();
+        ctx.restore();
+      });
+
+      Object.keys(snakes).forEach((id) => {
+        if (snakes[id]) {
+          snakes[id].draw();
+        }
+      });
+
+      playerSnake.draw();
 
       animationFrameId = requestAnimationFrame(gameLoop);
     };
 
     gameLoop();
+    const intervalId = setInterval(spawnFood, 3000); // Spawn food every 3 seconds
 
-    // Limpeza
     return () => {
       cancelAnimationFrame(animationFrameId);
+      clearInterval(intervalId);
       window.removeEventListener("resize", resizeCanvas);
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keyup", handleKeyUp);
-      document.removeEventListener("mousemove", handleMouseMove);
 
       socket.off("connect");
       socket.off("currentPlayers");
@@ -394,26 +382,71 @@ const Game: React.FC = () => {
       socket.off("playerMoved");
       socket.off("disconnect");
       socket.off("currentFoods");
-      socket.off("removeFood");
     };
   }, [gameOver]);
 
+  const handleRestart = () => {
+    setGameOver(false);
+    setScore(0);
+    if (playerSnake) playerSnake.reset();
+  };
+
   return (
-    <div>
+    <div
+      style={{
+        position: "relative",
+        width: "100vw",
+        height: "100vh",
+        overflow: "hidden",
+      }}
+    >
       <canvas
         ref={canvasRef}
         id="gameCanvas"
         style={{
-          width: "120vw",
-          height: "120vh",
-          marginLeft: "-10vw",
-          marginTop: "-10vh",
+          width: "100%",
+          height: "100%",
         }}
       ></canvas>
-      <div id="score">
+      <div
+        id="score"
+        style={{
+          position: "absolute",
+          top: "20px",
+          left: "20px",
+          color: "white",
+        }}
+      >
         Score: <span>{score}</span>
       </div>
       <div ref={cursorRef} id="cursor"></div>
+      {gameOver && (
+        <div
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            backgroundColor: "rgba(0, 0, 0, 0.8)",
+            color: "white",
+            padding: "20px",
+            borderRadius: "10px",
+            textAlign: "center",
+          }}
+        >
+          <h1>Game Over</h1>
+          <button
+            onClick={handleRestart}
+            style={{
+              marginTop: "10px",
+              padding: "10px 20px",
+              fontSize: "16px",
+            }}
+          >
+            Restart
+          </button>
+        </div>
+      )}
     </div>
   );
 };
