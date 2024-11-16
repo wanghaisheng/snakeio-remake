@@ -49,6 +49,7 @@ const Game: React.FC = () => {
       isDead: boolean;
       baseColor: string;
       tailColor: string;
+      lineWidth: number;
 
       constructor(position: Position, color: string) {
         this.segments = [position];
@@ -59,10 +60,11 @@ const Game: React.FC = () => {
         this.isDead = false;
         this.baseColor = color;
         this.tailColor = "hsl(160, 100%, 30%)";
+        this.lineWidth = 12; // Adicionado para referência no cálculo da colisão
       }
 
-      reset() {
-        this.segments = [{ x: canvas.width / 2, y: canvas.height / 2 }];
+      reset(position: Position) {
+        this.segments = [position];
         this.velocity = { x: 0, y: 0 };
         this.angle = 0;
         this.isDead = false;
@@ -127,6 +129,7 @@ const Game: React.FC = () => {
           angle: this.angle,
           segments: this.segments,
           length: this.length,
+          color: this.baseColor, // Adicionado caso a cor seja alterada
         });
 
         // Checa se a cobra colidiu com algum alimento
@@ -136,7 +139,7 @@ const Game: React.FC = () => {
             food.position.x - newHead.x,
             food.position.y - newHead.y
           );
-          if (dist < food.size) {
+          if (dist < food.size + this.lineWidth / 2) {
             this.length += 5; // Aumenta o comprimento da cobra
             setScore((prev) => prev + 1);
             // Emite evento para o servidor
@@ -180,7 +183,7 @@ const Game: React.FC = () => {
         }
 
         ctx.strokeStyle = gradient;
-        ctx.lineWidth = 12;
+        ctx.lineWidth = this.lineWidth;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
         ctx.stroke();
@@ -257,6 +260,8 @@ const Game: React.FC = () => {
         snakes[playerData.id].segments = playerData.segments;
         snakes[playerData.id].angle = playerData.angle;
         snakes[playerData.id].length = playerData.length;
+        snakes[playerData.id].baseColor =
+          playerData.color || snakes[playerData.id].baseColor;
       }
     });
 
@@ -411,7 +416,26 @@ const Game: React.FC = () => {
   const handleRestart = () => {
     setGameOver(false);
     setScore(0);
-    if (playerSnakeRef.current) playerSnakeRef.current.reset();
+
+    // Gera uma nova posição aleatória
+    const newPosition = {
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+    };
+
+    if (playerSnakeRef.current) {
+      playerSnakeRef.current.reset(newPosition);
+
+      // Envia ao servidor que o jogador reiniciou
+      socket.emit("playerRestart", {
+        id: socket.id,
+        position: newPosition,
+        angle: playerSnakeRef.current.angle,
+        segments: playerSnakeRef.current.segments,
+        length: playerSnakeRef.current.length,
+        color: playerSnakeRef.current.baseColor,
+      });
+    }
   };
 
   return (
