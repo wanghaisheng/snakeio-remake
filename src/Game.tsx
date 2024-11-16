@@ -1,5 +1,3 @@
-// src/Game.tsx
-
 import React, { useEffect, useRef, useState } from "react";
 import { Position, Segment, Player } from "./types";
 import io from "socket.io-client";
@@ -17,9 +15,13 @@ const Game: React.FC = () => {
     {}
   );
   const [foods, setFoods] = useState<any[]>([]);
+  const foodsRef = useRef<any[]>([]); // Referência para os alimentos
 
   const MAP_SIZE = 100; // Tamanho da grade do mapa em pixels
   const INITIAL_LENGTH = 20; // Tamanho inicial da cobra
+
+  // Ref para playerSnake
+  const playerSnakeRef = useRef<Snake | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -131,8 +133,8 @@ const Game: React.FC = () => {
         });
 
         // Checa se a cobra colidiu com algum alimento
-        for (let i = 0; i < foods.length; i++) {
-          const food = foods[i];
+        for (let i = 0; i < foodsRef.current.length; i++) {
+          const food = foodsRef.current[i];
           const dist = Math.hypot(
             food.position.x - newHead.x,
             food.position.y - newHead.y
@@ -140,9 +142,9 @@ const Game: React.FC = () => {
           if (dist < MAP_SIZE / 2) {
             this.length += 5; // Aumenta o comprimento da cobra
             setScore((prev) => prev + 1);
-            setFoods((prevFoods) =>
-              prevFoods.filter((_, index) => index !== i)
-            );
+            // Emite evento para o servidor
+            socket.emit("eatFood", food.id);
+            break; // Sai do loop após comer um alimento
           }
         }
       }
@@ -205,7 +207,6 @@ const Game: React.FC = () => {
       }
     }
 
-    let playerSnake: Snake | null = null;
     const snakes: { [id: string]: Snake } = {};
 
     socket.on("connect", () => {
@@ -216,11 +217,12 @@ const Game: React.FC = () => {
       Object.keys(players).forEach((id) => {
         const playerData = players[id];
         if (id === socket.id) {
-          playerSnake = new Snake(playerData.position, playerData.color);
-          playerSnake.segments =
+          const newSnake = new Snake(playerData.position, playerData.color);
+          newSnake.segments =
             playerData.segments.length > 0
               ? playerData.segments
               : [playerData.position];
+          playerSnakeRef.current = newSnake;
         } else {
           const otherSnake = new Snake(playerData.position, playerData.color);
           otherSnake.segments =
@@ -257,24 +259,32 @@ const Game: React.FC = () => {
       delete snakes[id];
     });
 
-    socket.on("currentFoods", (serverFoods: any[]) => {
-      setFoods(serverFoods);
+    // Listener para 'removePlayer'
+    socket.on("removePlayer", (id: string) => {
+      delete snakes[id];
     });
 
-    const spawnFood = () => {
-      const foodPosition = {
-        x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height,
-      };
-      setFoods((prevFoods) => [
-        ...prevFoods,
-        {
-          position: foodPosition,
-          hue: Math.floor(Math.random() * 360),
-          size: MAP_SIZE / 2,
-        },
-      ]);
-    };
+    socket.on("currentFoods", (serverFoods: any[]) => {
+      setFoods(serverFoods);
+      foodsRef.current = serverFoods; // Atualiza a referência
+    });
+
+    // Listeners para 'addFood' e 'removeFood'
+    socket.on("addFood", (food) => {
+      setFoods((prevFoods) => {
+        const newFoods = [...prevFoods, food];
+        foodsRef.current = newFoods;
+        return newFoods;
+      });
+    });
+
+    socket.on("removeFood", (foodId) => {
+      setFoods((prevFoods) => {
+        const newFoods = prevFoods.filter((food) => food.id !== foodId);
+        foodsRef.current = newFoods;
+        return newFoods;
+      });
+    });
 
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
@@ -321,6 +331,7 @@ const Game: React.FC = () => {
     };
 
     const gameLoop = () => {
+      const playerSnake = playerSnakeRef.current;
       if (!ctx || !playerSnake) {
         requestAnimationFrame(gameLoop);
         return;
@@ -343,7 +354,8 @@ const Game: React.FC = () => {
         return;
       }
 
-      foods.forEach((food) => {
+      // Use foodsRef.current para renderizar os alimentos
+      foodsRef.current.forEach((food) => {
         ctx.save();
         ctx.translate(-camera.x, -camera.y);
         ctx.shadowColor = `hsl(${food.hue}, 100%, 50%)`;
@@ -367,11 +379,9 @@ const Game: React.FC = () => {
     };
 
     gameLoop();
-    const intervalId = setInterval(spawnFood, 3000); // Spawn food every 3 seconds
 
     return () => {
       cancelAnimationFrame(animationFrameId);
-      clearInterval(intervalId);
       window.removeEventListener("resize", resizeCanvas);
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keyup", handleKeyUp);
@@ -382,13 +392,16 @@ const Game: React.FC = () => {
       socket.off("playerMoved");
       socket.off("disconnect");
       socket.off("currentFoods");
+      socket.off("addFood");
+      socket.off("removeFood");
+      socket.off("removePlayer");
     };
   }, [gameOver]);
 
   const handleRestart = () => {
     setGameOver(false);
     setScore(0);
-    if (playerSnake) playerSnake.reset();
+    if (playerSnakeRef.current) playerSnakeRef.current.reset();
   };
 
   return (
