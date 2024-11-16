@@ -6,14 +6,10 @@ const socket = io("http://localhost:3001");
 
 const Game: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cursorRef = useRef<HTMLDivElement>(null);
 
   const [score, setScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
 
-  const [otherPlayers, setOtherPlayers] = useState<{ [id: string]: Player }>(
-    {}
-  );
   const [foods, setFoods] = useState<any[]>([]);
   const foodsRef = useRef<any[]>([]); // Referência para os alimentos
 
@@ -26,9 +22,8 @@ const Game: React.FC = () => {
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
-    const cursor = cursorRef.current!;
 
-    if (!canvas || !ctx || !cursor) return;
+    if (!canvas || !ctx) return;
 
     let animationFrameId: number;
 
@@ -75,6 +70,8 @@ const Game: React.FC = () => {
       }
 
       update() {
+        if (this.isDead) return; // Adicionado para parar a atualização quando morto
+
         let dirX = 0;
         let dirY = 0;
 
@@ -139,11 +136,19 @@ const Game: React.FC = () => {
             food.position.x - newHead.x,
             food.position.y - newHead.y
           );
-          if (dist < MAP_SIZE / 2) {
+          if (dist < food.size) {
             this.length += 5; // Aumenta o comprimento da cobra
             setScore((prev) => prev + 1);
             // Emite evento para o servidor
             socket.emit("eatFood", food.id);
+
+            // Remove o alimento localmente imediatamente para evitar atraso visual
+            setFoods((prevFoods) => {
+              const newFoods = prevFoods.filter((f) => f.id !== food.id);
+              foodsRef.current = newFoods;
+              return newFoods;
+            });
+
             break; // Sai do loop após comer um alimento
           }
         }
@@ -286,6 +291,14 @@ const Game: React.FC = () => {
       });
     });
 
+    // Listener para 'youDied'
+    socket.on("youDied", () => {
+      if (playerSnakeRef.current) {
+        playerSnakeRef.current.isDead = true;
+        setGameOver(true);
+      }
+    });
+
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
@@ -349,10 +362,6 @@ const Game: React.FC = () => {
       ctx.restore();
 
       playerSnake.update();
-      if (playerSnake.isDead) {
-        setGameOver(true);
-        return;
-      }
 
       // Use foodsRef.current para renderizar os alimentos
       foodsRef.current.forEach((food) => {
@@ -395,6 +404,7 @@ const Game: React.FC = () => {
       socket.off("addFood");
       socket.off("removeFood");
       socket.off("removePlayer");
+      socket.off("youDied");
     };
   }, [gameOver]);
 
@@ -432,7 +442,6 @@ const Game: React.FC = () => {
       >
         Score: <span>{score}</span>
       </div>
-      <div ref={cursorRef} id="cursor"></div>
       {gameOver && (
         <div
           style={{
